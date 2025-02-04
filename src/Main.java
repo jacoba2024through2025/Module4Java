@@ -1,12 +1,16 @@
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Scanner;
 import java.sql.*;
 import java.sql.DriverManager;
 import java.sql.SQLException;
+
 public class Main {
 
     private static String correctUsername = "user123";
     private static String correctPassword = "password123";
     private static int loggedInUserId = -1;
+
     public static void main(String[] args) {
         Scanner scanner = new Scanner(System.in);
 
@@ -74,6 +78,7 @@ public class Main {
                 case 1:
 
                     System.out.println("Viewing my posts...");
+                    viewPosts();
                     break;
                 case 2:
 
@@ -324,6 +329,101 @@ public class Main {
         }
     }
 
+    public static void viewPosts() {
+        if (loggedInUserId == -1) {
+            System.out.println("You must log in first.");
+            return;
+        }
+
+        try (Connection connection = DriverManager.getConnection("jdbc:postgresql:postgres", "postgres", "Qu!stors2022")) {
+
+            // queries all posts made by the logged in user
+            String fetchPostsSql = "SELECT post_id, title, content, favorites_counter FROM posts WHERE user_id = ?";
+            PreparedStatement fetchPostsPst = connection.prepareStatement(fetchPostsSql);
+            fetchPostsPst.setInt(1, loggedInUserId);
+            ResultSet postsRs = fetchPostsPst.executeQuery();
+
+            // initially set postsExist to false.
+            boolean postsExist = false;
+
+            // if the query is successful, we can set the boolean to true
+            while (postsRs.next()) {
+                postsExist = true;
+
+                int postId = postsRs.getInt("post_id");
+                String title = postsRs.getString("title");
+                String content = postsRs.getString("content");
+                int favoritesCounter = postsRs.getInt("favorites_counter");
+
+                // get comments for the post using fetchCommentsForPost
+                List<String> comments = fetchCommentsForPost(postId, connection);
+
+                // Display post info
+                System.out.println("Title: " + title);
+                System.out.println("Content: " + content);
+                System.out.println("Favorites: " + favoritesCounter); // Display favorite count
+                System.out.println("Comments: ");
+                for (String comment : comments) {
+                    System.out.println("- " + comment);
+                }
+
+                System.out.println("-----------------------------------");
+            }
+
+            if (!postsExist) {
+
+                System.out.println("You have not created any posts.");
+            }
+
+            postsRs.close();
+            fetchPostsPst.close();
+
+        } catch (SQLException ex) {
+            ex.printStackTrace();
+            System.out.println("An error occurred while trying to view posts.");
+        }
+    }
+
+
+
+
+    // Method to fetch comments for a specific post
+
+    public static List<String> fetchCommentsForPost(int postId, Connection connection) {
+        List<String> comments = new ArrayList<>();
+
+        try {
+            // query all comments made by users and also join the users table to be able to get the user
+            String fetchCommentsSql = "SELECT u.username, c.content FROM comments c "
+                    + "JOIN users u ON c.user_id = u.user_id "
+                    + "WHERE c.post_id = ? ORDER BY c.created_at ASC";
+            PreparedStatement fetchCommentsPst = connection.prepareStatement(fetchCommentsSql);
+            fetchCommentsPst.setInt(1, postId);
+
+
+            ResultSet commentsRs = fetchCommentsPst.executeQuery();
+
+            while (commentsRs.next()) {
+                String username = commentsRs.getString("username");  // get the username
+                String commentContent = commentsRs.getString("content");  // get the comment content
+
+
+                String formattedComment = username + ": " + commentContent;
+                comments.add(formattedComment);  // Adds the comment to the list
+            }
+
+            commentsRs.close();
+            fetchCommentsPst.close();
+        } catch (SQLException ex) {
+            ex.printStackTrace();
+            System.out.println("An error occurred while fetching comments for the post.");
+        }
+
+        return comments;
+    }
+
+
+
 
     private static String getLoggedInUsername() {
         String username = null;
@@ -361,7 +461,7 @@ public class Main {
         }
 
         try {
-            // connect to the postgreSQL database
+            // connect to the PostgreSQL database
             Connection connection = DriverManager.getConnection("jdbc:postgresql:postgres", "postgres", "Qu!stors2022");
 
             // get user input for post title and content
@@ -378,14 +478,13 @@ public class Main {
             pst.setString(2, title);
             pst.setString(3, content);
 
-            //completes the insert statement
+            // completes the insert statement
             int rowsAffected = pst.executeUpdate();
 
             if (rowsAffected > 0) {
                 System.out.println("Your post has been created successfully!");
 
-
-                // gets the post_id of the new post
+                // Get the postId of the new post
                 String selectSql = "SELECT post_id, title, content FROM posts WHERE user_id = ? AND title = ? AND content = ?";
                 PreparedStatement selectPst = connection.prepareStatement(selectSql);
                 selectPst.setInt(1, loggedInUserId);
@@ -394,9 +493,15 @@ public class Main {
                 ResultSet rs = selectPst.executeQuery();
 
                 if (rs.next()) {
-                    System.out.println("Post ID: " + rs.getInt("post_id"));
-                    System.out.println("Title: " + rs.getString("title"));
-                    System.out.println("Content: " + rs.getString("content"));
+                    int postId = rs.getInt("post_id");
+                    String postTitle = rs.getString("title");
+                    String postContent = rs.getString("content");
+
+                    // Create a Post object and use its methods
+                    Posts newPost = new Posts(postId, postTitle, postContent, 0); // Initial favorites count is 0
+                    newPost.displayPost(); // Display post details
+
+                    // Optionally, you can return this Post object to the caller if you need it elsewhere
                 }
 
                 rs.close();
@@ -404,7 +509,6 @@ public class Main {
             } else {
                 System.out.println("There was an error creating your post. Please try again.");
             }
-
 
             pst.close();
             connection.close();
@@ -415,129 +519,122 @@ public class Main {
         }
     }
 
+
     public static void searchPosts(Scanner scanner) {
+        List<Posts> posts = new ArrayList<>();
+        Posts selectedPost = null;  // currently selected post
+
         if (loggedInUserId == -1) {
             System.out.println("You must log in first.");
             return;
         }
 
         try {
-            // connect to the database
+            // Connect to the database
             Connection connection = DriverManager.getConnection("jdbc:postgresql:postgres", "postgres", "Qu!stors2022");
 
-            // Get user input 1
-            System.out.print("Provide a user to search their posts: ");
+            // Get user input for the username to search
+            System.out.print("Provide a username to search their posts: ");
             String searchUsername = scanner.nextLine();
 
-            // Runs a query to see if the specified user is in the database or not
+            // Run a query to see if the specified user exists in the database
             String checkUserSql = "SELECT user_id FROM users WHERE username = ?";
             PreparedStatement checkUserPst = connection.prepareStatement(checkUserSql);
             checkUserPst.setString(1, searchUsername);
             ResultSet userRs = checkUserPst.executeQuery();
 
             if (userRs.next()) {
-                // if user exists, get their user_id
+                // If user exists, get their user_id
                 int targetUserId = userRs.getInt("user_id");
 
-                // get posts by the user, including the favorites
-                String fetchPostsSql = "SELECT post_id, title, favorites_counter FROM posts WHERE user_id = ?";
+                // get posts created by the user
+                String fetchPostsSql = "SELECT post_id, title, content, favorites_counter FROM posts WHERE user_id = ?";
                 PreparedStatement fetchPostsPst = connection.prepareStatement(fetchPostsSql);
                 fetchPostsPst.setInt(1, targetUserId);
                 ResultSet postsRs = fetchPostsPst.executeQuery();
 
-                // check if posts exist for the user
-                boolean hasPosts = false;
-                System.out.println("\nPosts by " + searchUsername + ":");
+                // get posts and create Post objects
                 while (postsRs.next()) {
                     int postId = postsRs.getInt("post_id");
                     String title = postsRs.getString("title");
-                    int favoriteCount = postsRs.getInt("favorites_counter");
+                    String content = postsRs.getString("content");
+                    int favoritesCounter = postsRs.getInt("favorites_counter");
 
-                    // display post titles with the favorite count
-                    System.out.println("Title: " + title);
-                    System.out.println("Favorites: " + favoriteCount);
-                    System.out.println("---------");
-
-                    hasPosts = true;
+                    // create new objects and add to the list
+                    Posts post = new Posts(postId, title, content, favoritesCounter);
+                    posts.add(post);
                 }
 
-                // If no posts are found
-                if (!hasPosts) {
-                    System.out.println("This user hasn't created any posts.");
-                } else {
-                    // The user provides a title of a post.
-                    System.out.print("\nEnter the title of the post you want to view: ");
-                    String selectedTitle = scanner.nextLine();
-
-                    // runs a query gets the post id where the user_id is the currently logged in user
-                    String fetchPostContentSql = "SELECT post_id, content FROM posts WHERE user_id = ? AND title = ?";
-                    PreparedStatement fetchPostContentPst = connection.prepareStatement(fetchPostContentSql);
-                    fetchPostContentPst.setInt(1, targetUserId);
-                    fetchPostContentPst.setString(2, selectedTitle);
-                    ResultSet postContentRs = fetchPostContentPst.executeQuery();
-
-                    if (postContentRs.next()) {
-                        int postId = postContentRs.getInt("post_id");
-                        // display the content of the selected post
-                        System.out.println("\nPost Content:\n" + postContentRs.getString("content"));
-
-                        // get the comments for this post
-                        String fetchCommentsSql = "SELECT c.content, u.username, c.created_at FROM comments c JOIN users u ON c.user_id = u.user_id WHERE c.post_id = ?";
-                        PreparedStatement fetchCommentsPst = connection.prepareStatement(fetchCommentsSql);
-                        fetchCommentsPst.setInt(1, postId);
-                        ResultSet commentsRs = fetchCommentsPst.executeQuery();
-
-                        boolean hasComments = false;
-                        System.out.println("\nComments:");
-                        while (commentsRs.next()) {
-                            System.out.println("Comment by " + commentsRs.getString("username") + " on " + commentsRs.getTimestamp("created_at"));
-                            System.out.println(commentsRs.getString("content"));
-                            System.out.println("---------");
-                            hasComments = true;
-                        }
-
-                        if (!hasComments) {
-                            System.out.println("No comments yet for this post.");
-                        }
-
-                        // user input to allow users to have the choice of comment on a post
-                        System.out.print("\nWould you like to comment on this post? (Y/N): ");
-                        String commentChoice = scanner.nextLine().toUpperCase();
-                        if (commentChoice.equals("Y")) {
-                            commentOnPost(scanner, postId);
-                        }
-                        // user input to allow users to have the choice of favorite a post
-                        System.out.print("\nWould you like to favorite this post? (Y/N): ");
-                        String favoriteChoice = scanner.nextLine().toUpperCase();
-                        if (favoriteChoice.equals("Y")) {
-                            favoriteOnPost(scanner, postId);  // Call your favoriteOnPost method
-                        }
-
-                    } else {
-                        System.out.println("No post found with the title: " + selectedTitle);
+                // if posts are found, list them
+                if (!posts.isEmpty()) {
+                    System.out.println("Found the following posts from " + searchUsername + ":");
+                    for (int i = 0; i < posts.size(); i++) {
+                        Posts post = posts.get(i);
+                        System.out.println((i + 1) + ". " + post.getTitle() + " (Favorites: " + post.getFavoritesCounter() + ")");
                     }
 
-                    postContentRs.close();
-                    fetchPostContentPst.close();
+                    // user input
+                    System.out.print("Enter the title of the post you want to select: ");
+                    String postTitle = scanner.nextLine();
+
+                    // if the selected post exists or not
+                    for (Posts post : posts) {
+                        if (post.getTitle().equalsIgnoreCase(postTitle)) {
+                            selectedPost = post;
+                            break;
+                        }
+                    }
+
+                    if (selectedPost != null) {
+                        System.out.println("You have selected the post: " + selectedPost.getTitle());
+                        // print the content of the selected post
+                        System.out.println("Post Content:");
+                        System.out.println(selectedPost.getContent());
+
+                        // display the favorite count
+                        System.out.println("This post has " + selectedPost.getFavoritesCounter() + " favorites.");
+
+
+                        System.out.print("Would you like to comment on this post? (yes/no): ");
+                        String commentChoice = scanner.nextLine();
+
+                        if (commentChoice.equalsIgnoreCase("yes")) {
+                            // calls the method to allow the user to comment
+                            commentOnPost(scanner, selectedPost.getPostId());
+                        } else {
+                            System.out.println("You chose not to comment on this post.");
+                        }
+
+                        // asks the user if they want to favorite this post
+                        System.out.println("Would you like to favorite this post? (yes/no): ");
+                        String favoriteChoice = scanner.nextLine();
+                        if (favoriteChoice.equalsIgnoreCase("yes")) {
+
+                            favoriteOnPost(scanner, selectedPost.getPostId());
+                            System.out.print("You have favorited this post");
+                        }
+                    } else {
+                        System.out.println("No post found with that title.");
+                    }
                 }
 
-                postsRs.close();
-                fetchPostsPst.close();
             } else {
-
-                System.out.println("User not found. Please try again.");
+                System.out.println("User not found.");
             }
-
 
             userRs.close();
             checkUserPst.close();
             connection.close();
-
         } catch (SQLException ex) {
             ex.printStackTrace();
             System.out.println("An error occurred while trying to search posts.");
         }
     }
+
+
+
+
+
 
 
 
